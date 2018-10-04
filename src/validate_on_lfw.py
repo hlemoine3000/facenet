@@ -32,14 +32,15 @@ from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 import argparse
-import facenet
-import lfw
 import os
 import sys
 from tensorflow.python.ops import data_flow_ops
 from sklearn import metrics
 from scipy.optimize import brentq
 from scipy import interpolate
+from src import facenet
+from src import lfw
+
 
 def main(args):
   
@@ -94,12 +95,14 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
     nrof_images = nrof_embeddings * nrof_flips
     labels_array = np.expand_dims(np.arange(0,nrof_images),1)
     image_paths_array = np.expand_dims(np.repeat(np.array(image_paths),nrof_flips),1)
+
     control_array = np.zeros_like(labels_array, np.int32)
     if use_fixed_image_standardization:
         control_array += np.ones_like(labels_array)*facenet.FIXED_STANDARDIZATION
     if use_flipped_images:
         # Flip every second image
         control_array += (labels_array % 2)*facenet.FLIP
+
     sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array, control_placeholder: control_array})
     
     embedding_size = int(embeddings.get_shape()[1])
@@ -126,10 +129,10 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
 
     assert np.array_equal(lab_array, np.arange(nrof_images))==True, 'Wrong labels used for evaluation, possibly caused by training examples left in the input pipeline'
     tpr, fpr, accuracy, val, val_std, far = lfw.evaluate(embeddings, actual_issame, nrof_folds=nrof_folds, distance_metric=distance_metric, subtract_mean=subtract_mean)
-    
+
     print('Accuracy: %2.5f+-%2.5f' % (np.mean(accuracy), np.std(accuracy)))
     print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))
-    
+
     auc = metrics.auc(fpr, tpr)
     print('Area Under Curve (AUC): %1.3f' % auc)
     eer = brentq(lambda x: 1. - x - interpolate.interp1d(fpr, tpr)(x), 0., 1.)

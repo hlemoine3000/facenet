@@ -183,31 +183,32 @@ def train(total_loss, global_step, optimizer, learning_rate, moving_average_deca
             opt = tf.train.MomentumOptimizer(learning_rate, 0.9, use_nesterov=True)
         else:
             raise ValueError('Invalid optimization algorithm')
-    
+
         grads = opt.compute_gradients(total_loss, update_gradient_vars)
-        
+
     # Apply gradients.
     apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
-  
+
     # Add histograms for trainable variables.
     if log_histograms:
         for var in tf.trainable_variables():
             tf.summary.histogram(var.op.name, var)
-   
+
     # Add histograms for gradients.
     if log_histograms:
         for grad, var in grads:
             if grad is not None:
                 tf.summary.histogram(var.op.name + '/gradients', grad)
-  
+
     # Track the moving averages of all trainable variables.
     variable_averages = tf.train.ExponentialMovingAverage(
         moving_average_decay, global_step)
-    variables_averages_op = variable_averages.apply(tf.trainable_variables())
-  
+    with tf.variable_scope('super_test1'):
+        variables_averages_op = variable_averages.apply(tf.trainable_variables())
+
     with tf.control_dependencies([apply_gradient_op, variables_averages_op]):
         train_op = tf.no_op(name='train')
-  
+
     return train_op
 
 def prewhiten(x):
@@ -326,6 +327,9 @@ def get_dataset(path, has_class_directories=True):
         facedir = os.path.join(path_exp, class_name)
         image_paths = get_image_paths(facedir)
         dataset.append(ImageClass(class_name, image_paths))
+
+        if not i % 500:
+            print('Fetching data: {}/{}'.format(i, nrof_classes))
   
     return dataset
 
@@ -430,6 +434,9 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
     
     tprs = np.zeros((nrof_folds,nrof_thresholds))
     fprs = np.zeros((nrof_folds,nrof_thresholds))
+    tpr = 0
+    fpr = 0
+    best_threshold = 0
     accuracy = np.zeros((nrof_folds))
     
     indices = np.arange(nrof_pairs)
@@ -446,13 +453,14 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
         for threshold_idx, threshold in enumerate(thresholds):
             _, _, acc_train[threshold_idx] = calculate_accuracy(threshold, dist[train_set], actual_issame[train_set])
         best_threshold_index = np.argmax(acc_train)
-        for threshold_idx, threshold in enumerate(thresholds):
-            tprs[fold_idx,threshold_idx], fprs[fold_idx,threshold_idx], _ = calculate_accuracy(threshold, dist[test_set], actual_issame[test_set])
-        _, _, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index], dist[test_set], actual_issame[test_set])
+        best_threshold = thresholds[best_threshold_index]
+        # for threshold_idx, threshold in enumerate(thresholds):
+        #     tprs[fold_idx,threshold_idx], fprs[fold_idx,threshold_idx], _ = calculate_accuracy(threshold, dist[test_set], actual_issame[test_set])
+        tpr, fpr, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index], dist[test_set], actual_issame[test_set])
           
-        tpr = np.mean(tprs,0)
-        fpr = np.mean(fprs,0)
-    return tpr, fpr, accuracy
+        # tpr = np.mean(tprs,0)
+        # fpr = np.mean(fprs,0)
+    return tpr, fpr, accuracy, best_threshold
 
 def calculate_accuracy(threshold, dist, actual_issame):
     predict_issame = np.less(dist, threshold)
@@ -477,6 +485,7 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
     
     val = np.zeros(nrof_folds)
     far = np.zeros(nrof_folds)
+    far_threshold = np.zeros(nrof_folds, dtype=float)
     
     indices = np.arange(nrof_pairs)
     
@@ -486,23 +495,25 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
         else:
           mean = 0.0
         dist = distance(embeddings1-mean, embeddings2-mean, distance_metric)
-      
+
         # Find the threshold that gives FAR = far_target
         far_train = np.zeros(nrof_thresholds)
         for threshold_idx, threshold in enumerate(thresholds):
             _, far_train[threshold_idx] = calculate_val_far(threshold, dist[train_set], actual_issame[train_set])
         if np.max(far_train)>=far_target:
             f = interpolate.interp1d(far_train, thresholds, kind='slinear')
-            threshold = f(far_target)
+            test = f(far_target)
+            far_threshold[fold_idx] = test
         else:
-            threshold = 0.0
+            far_threshold[fold_idx] = 0.0
     
-        val[fold_idx], far[fold_idx] = calculate_val_far(threshold, dist[test_set], actual_issame[test_set])
-  
+        val[fold_idx], far[fold_idx] = calculate_val_far(far_threshold[fold_idx], dist[test_set], actual_issame[test_set])
+
+    threshold_mean = np.mean(far_threshold)
     val_mean = np.mean(val)
     far_mean = np.mean(far)
     val_std = np.std(val)
-    return val_mean, val_std, far_mean
+    return val_mean, val_std, far_mean, threshold_mean
 
 
 def calculate_val_far(threshold, dist, actual_issame):

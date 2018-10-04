@@ -38,6 +38,7 @@ import itertools
 import argparse
 from src import facenet
 from src import lfw
+from src import cox
 
 from tensorflow.python.ops import data_flow_ops
 
@@ -57,13 +58,13 @@ def main(args):
 
     # Write arguments to a text file
     facenet.write_arguments_to_file(args, os.path.join(log_dir, 'arguments.txt'))
-        
+
     # Store some git revision info in a text file in the log directory
     src_path,_ = os.path.split(os.path.realpath(__file__))
     facenet.store_revision_info(src_path, log_dir, ' '.join(sys.argv))
 
     np.random.seed(seed=args.seed)
-    train_set = facenet.get_dataset(args.data_dir)
+    train_set, test_set = cox.get_dataset(args.still_dir, args.video_dir, 0.3)
     
     print('Model directory: %s' % model_dir)
     print('Log directory: %s' % log_dir)
@@ -209,27 +210,45 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
         lr = facenet.get_learning_rate_from_file(learning_rate_schedule_file, epoch)
     while batch_number < args.epoch_size:
         # Sample people randomly from the dataset
-        image_paths, num_per_class = sample_people(dataset, args.people_per_batch, args.images_per_person)
-        
-        print('Running forward pass on sampled images: ', end='')
+        video_paths, still_paths, num_per_class = sample_people(dataset, args.people_per_batch, args.images_per_person)
+
+        # Video samples forward pass
+        print('Running forward pass on video sampled images: ', end='')
         start_time = time.time()
         nrof_examples = args.people_per_batch * args.images_per_person
         labels_array = np.reshape(np.arange(nrof_examples),(-1,3))
-        image_paths_array = np.reshape(np.expand_dims(np.array(image_paths),1), (-1,3))
+        image_paths_array = np.reshape(np.expand_dims(np.array(video_paths),1), (-1,3))
         sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
-        emb_array = np.zeros((nrof_examples, embedding_size))
+        video_emb_array = np.zeros((nrof_examples, embedding_size))
         nrof_batches = int(np.ceil(nrof_examples / args.batch_size))
         for i in range(nrof_batches):
             batch_size = min(nrof_examples-i*args.batch_size, args.batch_size)
-            emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size, 
+            video_emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
                 learning_rate_placeholder: lr, phase_train_placeholder: True})
-            emb_array[lab,:] = emb
+            video_emb_array[lab,:] = video_emb
         print('%.3f' % (time.time()-start_time))
+
+        # Still samples forward pass
+        print('Running forward pass on still sampled images: ', end='')
+        start_time = time.time()
+        nrof_examples = args.people_per_batch# * args.images_per_person
+        labels_array = np.reshape(np.arange(nrof_examples), (-1, 3))
+        still_paths_array = np.reshape(np.expand_dims(np.array(still_paths), 1), (-1, 3))
+        sess.run(enqueue_op, {image_paths_placeholder: still_paths_array, labels_placeholder: labels_array})
+        still_emb_array = np.zeros((nrof_examples, embedding_size))
+        nrof_batches = int(np.ceil(nrof_examples / args.batch_size))
+        for i in range(nrof_batches):
+            batch_size = min(nrof_examples - i * args.batch_size, args.batch_size)
+            still_emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
+                                                                       learning_rate_placeholder: lr,
+                                                                       phase_train_placeholder: True})
+            still_emb_array[lab, :] = still_emb
+        print('%.3f' % (time.time() - start_time))
 
         # Select triplets based on the embeddings
         print('Selecting suitable triplets for training')
-        triplets, nrof_random_negs, nrof_triplets = select_triplets(emb_array, num_per_class, 
-            image_paths, args.people_per_batch, args.alpha)
+        triplets, nrof_random_negs, nrof_triplets = select_triplets(video_emb_array, still_emb_array, num_per_class,
+            video_paths, still_paths, args.people_per_batch, args.alpha)
         selection_time = time.time() - start_time
         print('(nrof_random_negs, nrof_triplets) = (%d, %d): time=%.3f seconds' % 
             (nrof_random_negs, nrof_triplets, selection_time))
@@ -268,7 +287,7 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
         summary_writer.add_summary(summary, step)
     return step
   
-def select_triplets(embeddings, nrof_images_per_class, image_paths, people_per_batch, alpha):
+def select_triplets(video_embeddings, still_embeddings, nrof_images_per_class, video_paths, still_paths, people_per_batch, alpha):
     """ Select the triplets for training
     """
     trip_idx = 0
@@ -286,20 +305,21 @@ def select_triplets(embeddings, nrof_images_per_class, image_paths, people_per_b
     for i in xrange(people_per_batch):
         nrof_images = int(nrof_images_per_class[i])
         for j in xrange(1,nrof_images):
-            a_idx = emb_start_idx + j - 1
-            neg_dists_sqr = np.sum(np.square(embeddings[a_idx] - embeddings), 1)
-            for pair in xrange(j, nrof_images): # For every possible positive pair.
+
+            a_idx = i
+            neg_dists_sqr = np.sum(np.square(still_embeddings[a_idx] - video_embeddings), 1)
+            for pair in xrange(j, nrof_images):  # For every possible positive pair.
                 p_idx = emb_start_idx + pair
-                pos_dist_sqr = np.sum(np.square(embeddings[a_idx]-embeddings[p_idx]))
-                neg_dists_sqr[emb_start_idx:emb_start_idx+nrof_images] = np.NaN
-                #all_neg = np.where(np.logical_and(neg_dists_sqr-pos_dist_sqr<alpha, pos_dist_sqr<neg_dists_sqr))[0]  # FaceNet selection
-                all_neg = np.where(neg_dists_sqr-pos_dist_sqr<alpha)[0] # VGG Face selecction
+                pos_dist_sqr = np.sum(np.square(still_embeddings[a_idx] - video_embeddings[p_idx]))
+                neg_dists_sqr[emb_start_idx:emb_start_idx + nrof_images] = np.NaN
+                # all_neg = np.where(np.logical_and(neg_dists_sqr-pos_dist_sqr<alpha, pos_dist_sqr<neg_dists_sqr))[0]  # FaceNet selection
+                all_neg = np.where(neg_dists_sqr - pos_dist_sqr < alpha)[0]  # VGG Face selecction
                 nrof_random_negs = all_neg.shape[0]
-                if nrof_random_negs>0:
+                if nrof_random_negs > 0:
                     rnd_idx = np.random.randint(nrof_random_negs)
                     n_idx = all_neg[rnd_idx]
-                    triplets.append((image_paths[a_idx], image_paths[p_idx], image_paths[n_idx]))
-                    #print('Triplet %d: (%d, %d, %d), pos_dist=%2.6f, neg_dist=%2.6f (%d, %d, %d, %d, %d)' % 
+                    triplets.append((still_paths[a_idx], video_paths[p_idx], video_paths[n_idx]))
+                    # print('Triplet %d: (%d, %d, %d), pos_dist=%2.6f, neg_dist=%2.6f (%d, %d, %d, %d, %d)' %
                     #    (trip_idx, a_idx, p_idx, n_idx, pos_dist_sqr, neg_dists_sqr[n_idx], nrof_random_negs, rnd_idx, i, j, emb_start_idx))
                     trip_idx += 1
 
@@ -320,6 +340,7 @@ def sample_people(dataset, people_per_batch, images_per_person):
     
     i = 0
     image_paths = []
+    still_paths = []
     num_per_class = []
     sampled_class_indices = []
     # Sample images from these classes until we have enough
@@ -330,13 +351,13 @@ def sample_people(dataset, people_per_batch, images_per_person):
         np.random.shuffle(image_indices)
         nrof_images_from_class = min(nrof_images_in_class, images_per_person, nrof_images-len(image_paths))
         idx = image_indices[0:nrof_images_from_class]
-        image_paths_for_class = [dataset[class_index].image_paths[j] for j in idx]
-        sampled_class_indices += [class_index]*nrof_images_from_class
-        image_paths += image_paths_for_class
+
+        image_paths += [dataset[class_index].video_paths[j] for j in idx]
+        still_paths.append(dataset[class_index].still_path)
         num_per_class.append(nrof_images_from_class)
         i+=1
   
-    return image_paths, num_per_class
+    return image_paths, still_paths, num_per_class
 
 def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder, 
         batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame, batch_size, 
@@ -375,9 +396,7 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
     summary.value.add(tag='lfw/val_rate', simple_value=val)
     summary.value.add(tag='lfw/tpr', simple_value=tpr)
     summary.value.add(tag='lfw/best_threshold', simple_value=best_threshold)
-    summary.value.add(tag='lfw/threshold_lowfar', simple_value=threshold_lowfar)
-    summary.value.add(tag='lfw/tpr_lowfar', simple_value=tpr_lowfar)
-    summary.value.add(tag='lfw/threshold_lowfar', simple_value=threshold_lowfar)
+    summary.value.add(tag='lfw/val_rate_threshold', simple_value=threshold_lowfar)
     summary.value.add(tag='lfw/acc_lowfar', simple_value=np.mean(acc_lowfar))
     summary.value.add(tag='time/lfw', simple_value=lfw_time)
     summary_writer.add_summary(summary, step)
