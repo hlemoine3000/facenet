@@ -37,15 +37,15 @@ import importlib
 import itertools
 import argparse
 from src import facenet
-from src import lfw
-from src import tripletloss
+from src import lfw, cox
+from src import tripletloss, adversarialloss
 
 from tensorflow.python.ops import data_flow_ops
 
 from six.moves import xrange  # @UnresolvedImport
 
 def main(args):
-
+  
     network = importlib.import_module(args.model_def)
 
     subdir = datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S')
@@ -60,11 +60,33 @@ def main(args):
     facenet.write_arguments_to_file(args, os.path.join(log_dir, 'arguments.txt'))
         
     # Store some git revision info in a text file in the log directory
-    src_path,_ = os.path.split(os.path.realpath(__file__))
-    facenet.store_revision_info(src_path, log_dir, ' '.join(sys.argv))
+    # src_path,_ = os.path.split(os.path.realpath(__file__))
+    # facenet.store_revision_info(src_path, log_dir, ' '.join(sys.argv))
 
     np.random.seed(seed=args.seed)
-    train_set = facenet.get_dataset(args.data_dir)
+
+    # Fetch dataets
+    # VGGface2
+    print('Fetch VGGface2 as source dataset at {}'.format(args.vggface2_train_dir))
+    src_train_set = facenet.get_dataset(args.vggface2_train_dir)
+    # validation_set = facenet.get_dataset(args.vggface2_val_dir)
+
+    # COX S2V
+    print('Fetch COX-S2V as target dataset at {}'.format(args.cox_video_dir))
+    cox_pairs = cox.read_pairs(os.path.expanduser(args.cox_pairs))
+    fold_list = cox.get_fold(cox_pairs)
+    cox_train_list = list(itertools.chain.from_iterable(fold_list[0:3]))
+    cox_val_list = list(itertools.chain.from_iterable(fold_list[3:10]))
+    tgt_train_set = cox.get_video_dataset(args.cox_video_dir, cox_train_list)
+    tgt_val_set = cox.get_video_dataset(args.cox_video_dir, cox_val_list)
+
+    validation_list = list(itertools.chain.from_iterable(fold_list[3:10]))
+    cox_paths, cox_issame = cox.get_paths(os.path.expanduser(args.cox_still_dir),
+                                          os.path.expanduser(args.cox_video_dir),
+                                          cox_pairs,
+                                          validation_list)
+    cox_paths = cox_paths[:-8]
+    cox_issame = cox_issame[:-4]
     
     print('Model directory: %s' % model_dir)
     print('Log directory: %s' % log_dir)
@@ -90,12 +112,12 @@ def main(args):
         
         phase_train_placeholder = tf.placeholder(tf.bool, name='phase_train')
         
-        image_paths_placeholder = tf.placeholder(tf.string, shape=(None,3), name='image_paths')
-        labels_placeholder = tf.placeholder(tf.int64, shape=(None,3), name='labels')
+        image_paths_placeholder = tf.placeholder(tf.string, shape=(None,4), name='image_paths')
+        labels_placeholder = tf.placeholder(tf.int64, shape=(None,4), name='labels')
         
         input_queue = data_flow_ops.FIFOQueue(capacity=100000,
                                     dtypes=[tf.string, tf.int64],
-                                    shapes=[(3,), (3,)],
+                                    shapes=[(4,), (4,)],
                                     shared_name=None, name=None)
         enqueue_op = input_queue.enqueue_many([image_paths_placeholder, labels_placeholder])
         
@@ -114,7 +136,7 @@ def main(args):
                     image = tf.image.resize_image_with_crop_or_pad(image, args.image_size, args.image_size)
                 if args.random_flip:
                     image = tf.image.random_flip_left_right(image)
-    
+
                 #pylint: disable=no-member
                 image.set_shape((args.image_size, args.image_size, 3))
                 images.append(tf.image.per_image_standardization(image))
@@ -136,8 +158,10 @@ def main(args):
 
         embeddings = tf.nn.l2_normalize(prelogits, 1, 1e-10, name='embeddings')
         # Split embeddings into anchor, positive and negative and calculate triplet loss
-        anchor, positive, negative = tf.unstack(tf.reshape(embeddings, [-1,3,args.embedding_size]), 3, 1)
-        triplet_loss = tripletloss.triplet_loss(anchor, positive, negative, args.alpha)
+        anchor, positive, negative, target = tf.unstack(tf.reshape(embeddings, [-1,4,args.embedding_size]), 4, 1)
+        loss, adv_loss, triplet_loss = adversarialloss.quadruplets_loss(anchor, positive, negative, target, args.alpha, args.lamb, args.zeta)
+        # triplet_loss = tripletloss.triplet_loss(anchor, positive, negative, args.alpha)
+        # adv_loss = adversarialloss.adversarial_loss(anchor, target, args.alpha)
 
         learning_rate = tf.train.exponential_decay(learning_rate_placeholder, global_step,
             args.learning_rate_decay_epochs*args.epoch_size, args.learning_rate_decay_factor, staircase=True)
@@ -145,7 +169,8 @@ def main(args):
 
         # Calculate the total losses
         regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        total_loss = tf.add_n([triplet_loss] + regularization_losses, name='total_loss')
+        total_loss = tf.add_n([loss] + regularization_losses, name='total_loss')# + [adv_loss]
+        reg_loss = tf.add_n(regularization_losses, name='total_loss')
 
         # Build a Graph that trains the model with one batch of examples and updates the model parameters
         train_op = facenet.train(total_loss, global_step, args.optimizer,
@@ -180,27 +205,41 @@ def main(args):
             while epoch < args.max_nrof_epochs:
                 step = sess.run(global_step, feed_dict=None)
                 epoch = step // args.epoch_size
+
+                # Evaluate on COX
+                cox_result = evaluate(sess, cox_paths, embeddings, labels_batch, image_paths_placeholder,
+                                      labels_placeholder,
+                                      batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder,
+                                      enqueue_op,
+                                      cox_issame, args.batch_size,
+                                      args.lfw_nrof_folds, log_dir, step, summary_writer, args.embedding_size,
+                                      tag='cox')
+
+                if args.lfw_dir:
+                    evaluate(sess, lfw_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
+                            batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame, args.batch_size,
+                            args.lfw_nrof_folds, log_dir, step, summary_writer, args.embedding_size)
+
                 # Train for one epoch
-                train(args, sess, train_set, epoch, image_paths_placeholder, labels_placeholder, labels_batch,
+                train(args, sess, src_train_set, tgt_train_set, epoch, image_paths_placeholder, labels_placeholder, labels_batch,
                     batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, input_queue, global_step, 
-                    embeddings, total_loss, train_op, summary_writer, args.learning_rate_schedule_file,
+                    embeddings, total_loss, triplet_loss, adv_loss, reg_loss, train_op, summary_writer, args.learning_rate_schedule_file,
                     args.embedding_size)
 
                 # Save variables and the metagraph if it doesn't exist already
                 save_variables_and_metagraph(sess, saver, summary_writer, model_dir, subdir, step)
 
                 # Evaluate on LFW
-                if args.lfw_dir:
-                    evaluate(sess, lfw_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder, 
-                            batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame, args.batch_size, 
-                            args.lfw_nrof_folds, log_dir, step, summary_writer, args.embedding_size)
+
+
+
 
     return model_dir
 
 
-def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholder, labels_batch,
+def train(args, sess, src_dataset, tgt_dataset, epoch, image_paths_placeholder, labels_placeholder, labels_batch,
           batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, input_queue, global_step, 
-          embeddings, loss, train_op, summary_writer, learning_rate_schedule_file,
+          embeddings, total_loss, triplet_loss, adv_loss, reg_loss, train_op, summary_writer, learning_rate_schedule_file,
           embedding_size):
     batch_number = 0
     
@@ -210,13 +249,21 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
         lr = facenet.get_learning_rate_from_file(learning_rate_schedule_file, epoch)
     while batch_number < args.epoch_size:
         # Sample people randomly from the dataset
-        image_paths, num_per_class = sample_people(dataset, args.people_per_batch, args.images_per_person)
+        src_image_paths, src_num_per_class = sample_people(src_dataset, args.people_per_batch,
+                                                       args.images_per_person)
+        tgt_image_paths, tgt_num_per_class = sample_people(tgt_dataset, args.people_per_batch,
+                                                       args.images_per_person, nb_images=len(src_image_paths)/3)
         
         print('Running forward pass on sampled images: ', end='')
         start_time = time.time()
-        nrof_examples = args.people_per_batch * args.images_per_person
-        labels_array = np.reshape(np.arange(nrof_examples),(-1,3))
-        image_paths_array = np.reshape(np.expand_dims(np.array(image_paths),1), (-1,3))
+
+        src_image_paths_array = np.reshape(np.expand_dims(np.array(src_image_paths),1), (-1,3))
+        tgt_image_paths_array = np.expand_dims(np.array(tgt_image_paths), axis=0).T
+        image_paths_array = np.concatenate((src_image_paths_array, tgt_image_paths_array), axis=1)
+
+        nrof_examples = image_paths_array.size
+        labels_array = np.reshape(np.arange(nrof_examples), (-1, 4))
+
         sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
         emb_array = np.zeros((nrof_examples, embedding_size))
         nrof_batches = int(np.ceil(nrof_examples / args.batch_size))
@@ -225,43 +272,49 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
             emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size, 
                 learning_rate_placeholder: lr, phase_train_placeholder: True})
             emb_array[lab,:] = emb
+        emb_array = np.lib.stride_tricks.as_strided(emb_array, (nrof_examples // 4, 4, embedding_size))
+        src_emb_array = np.reshape(emb_array[:, 0:3], (-1, embedding_size))
+        tgt_emb_array = emb_array[:, 3]
         print('%.3f' % (time.time()-start_time))
 
         # Select triplets based on the embeddings
         print('Selecting suitable triplets for training')
-        triplets, nrof_random_negs, nrof_triplets = tripletloss.select_triplets(emb_array, num_per_class,
-            image_paths, args.people_per_batch, args.alpha)
+        quadruplets, nrof_random_negs, nrof_quadruplets = adversarialloss.select_quadruplets(src_emb_array, tgt_emb_array, src_num_per_class,
+                                                                                src_image_paths, tgt_image_paths, args.people_per_batch, args.alpha)
         selection_time = time.time() - start_time
         print('(nrof_random_negs, nrof_triplets) = (%d, %d): time=%.3f seconds' % 
-            (nrof_random_negs, nrof_triplets, selection_time))
+            (nrof_random_negs, nrof_quadruplets, selection_time))
 
-        # Perform training on the selected triplets
-        nrof_batches = int(np.ceil(nrof_triplets*3/args.batch_size))
-        triplet_paths = list(itertools.chain(*triplets))
-        labels_array = np.reshape(np.arange(len(triplet_paths)),(-1,3))
-        triplet_paths_array = np.reshape(np.expand_dims(np.array(triplet_paths),1), (-1,3))
-        sess.run(enqueue_op, {image_paths_placeholder: triplet_paths_array, labels_placeholder: labels_array})
-        nrof_examples = len(triplet_paths)
+        # Perform training on the selected quadruplets
+        nrof_batches = int(np.ceil(nrof_quadruplets*4/args.batch_size))
+        quadruplets_paths = list(itertools.chain(*quadruplets))
+        labels_array = np.reshape(np.arange(len(quadruplets_paths)),(-1,4))
+        quadruplets_paths_array = np.reshape(np.expand_dims(np.array(quadruplets_paths),1), (-1,4))
+        sess.run(enqueue_op, {image_paths_placeholder: quadruplets_paths_array, labels_placeholder: labels_array})
+        nrof_examples = len(quadruplets_paths)
         train_time = 0
         i = 0
         emb_array = np.zeros((nrof_examples, embedding_size))
-        loss_array = np.zeros((nrof_triplets,))
+        loss_array = np.zeros((nrof_quadruplets,))
         summary = tf.Summary()
         step = 0
         while i < nrof_batches:
             start_time = time.time()
             batch_size = min(nrof_examples-i*args.batch_size, args.batch_size)
             feed_dict = {batch_size_placeholder: batch_size, learning_rate_placeholder: lr, phase_train_placeholder: True}
-            err, _, step, emb, lab = sess.run([loss, train_op, global_step, embeddings, labels_batch], feed_dict=feed_dict)
+            triplet_err, adv_err, total_err, _, step, emb, lab = sess.run([triplet_loss, adv_loss, total_loss, train_op, global_step, embeddings, labels_batch], feed_dict=feed_dict)
             #emb_array[lab,:] = emb
             #loss_array[i] = err
             duration = time.time() - start_time
-            print('Epoch: [%d][%d/%d]\tTime %.3f\tLoss %2.3f' %
-                  (epoch, batch_number+1, args.epoch_size, duration, err))
+            print('Epoch: [%d][%d/%d]\tTime %.3f\nTotal loss %2.3f\nTriplet loss %2.3f\nAdv loss %2.3f' %
+                  (epoch, batch_number+1, args.epoch_size, duration, total_err, triplet_err, adv_err))
             batch_number += 1
             i += 1
             train_time += duration
-            summary.value.add(tag='loss', simple_value=err)
+            summary.value.add(tag='loss/total_loss', simple_value=total_err)
+            summary.value.add(tag='loss/triplet_loss', simple_value=triplet_err)
+            summary.value.add(tag='loss/adv_loss', simple_value=adv_err)
+            #summary.value.add(tag='loss/regularisationL2_err', simple_value=reg_err)
             
         # Add validation loss and accuracy to summary
         #pylint: disable=maybe-no-member
@@ -269,79 +322,89 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
         summary_writer.add_summary(summary, step)
     return step
 
-def sample_people(dataset, people_per_batch, images_per_person):
-    nrof_images = people_per_batch * images_per_person
-  
+
+def sample_people(dataset, people_per_batch, images_per_person, nb_images=None):
+    if nb_images:
+        nrof_images = nb_images
+    else:
+        nrof_images = people_per_batch * images_per_person
+
     # Sample classes from the dataset
     nrof_classes = len(dataset)
     class_indices = np.arange(nrof_classes)
     np.random.shuffle(class_indices)
-    
+
     i = 0
     image_paths = []
     num_per_class = []
     sampled_class_indices = []
     # Sample images from these classes until we have enough
-    while len(image_paths)<nrof_images:
+    while len(image_paths) < nrof_images:
         class_index = class_indices[i]
         nrof_images_in_class = len(dataset[class_index])
         image_indices = np.arange(nrof_images_in_class)
         np.random.shuffle(image_indices)
-        nrof_images_from_class = min(nrof_images_in_class, images_per_person, nrof_images-len(image_paths))
+        nrof_images_from_class = min(nrof_images_in_class, images_per_person, nrof_images - len(image_paths))
         idx = image_indices[0:nrof_images_from_class]
         image_paths_for_class = [dataset[class_index].image_paths[j] for j in idx]
-        sampled_class_indices += [class_index]*nrof_images_from_class
+        sampled_class_indices += [class_index] * nrof_images_from_class
         image_paths += image_paths_for_class
         num_per_class.append(nrof_images_from_class)
-        i+=1
-  
+        i += 1
+
     return image_paths, num_per_class
 
-def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder, 
-        batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame, batch_size, 
-        nrof_folds, log_dir, step, summary_writer, embedding_size):
+
+def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
+             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame,
+             batch_size, nrof_folds, log_dir, step, summary_writer, embedding_size, threshold_to_test=None, tag='lfw'):
+    result = {}
     start_time = time.time()
     # Run forward pass to calculate embeddings
-    print('Running forward pass on LFW images: ', end='')
-    
-    nrof_images = len(actual_issame)*2
-    assert(len(image_paths)==nrof_images)
-    labels_array = np.reshape(np.arange(nrof_images),(-1,3))
-    image_paths_array = np.reshape(np.expand_dims(np.array(image_paths),1), (-1,3))
+    print('Running forward pass on ' + tag + ' images: ', end='')
+
+    nrof_images = len(actual_issame) * 2
+    assert (len(image_paths) == nrof_images)
+    labels_array = np.reshape(np.arange(nrof_images), (-1, 4))
+    image_paths_array = np.reshape(np.expand_dims(np.array(image_paths), 1), (-1, 4))
     sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
     emb_array = np.zeros((nrof_images, embedding_size))
     nrof_batches = int(np.ceil(nrof_images / batch_size))
     label_check_array = np.zeros((nrof_images,))
     for i in xrange(nrof_batches):
-        batch_size = min(nrof_images-i*batch_size, batch_size)
+        batch_size = min(nrof_images - i * batch_size, batch_size)
         emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
-            learning_rate_placeholder: 0.0, phase_train_placeholder: False})
-        emb_array[lab,:] = emb
+                                                                   learning_rate_placeholder: 0.0,
+                                                                   phase_train_placeholder: False})
+        emb_array[lab, :] = emb
         label_check_array[lab] = 1
-    print('%.3f' % (time.time()-start_time))
-    
-    assert(np.all(label_check_array==1))
+    print('%.3f' % (time.time() - start_time))
 
-    tpr, fpr, accuracy, val, val_std, far, best_threshold, threshold_lowfar, tpr_lowfar, acc_lowfar = lfw.evaluate(emb_array, actual_issame, nrof_folds=nrof_folds)
-    
+    assert (np.all(label_check_array == 1))
+
+    tpr, fpr, accuracy, val, val_std, far, best_threshold, threshold_lowfar, tpr_lowfar, acc_lowfar = lfw.evaluate(
+        emb_array, actual_issame, nrof_folds=nrof_folds)
+
     print('Accuracy: %1.3f+-%1.3f' % (np.mean(accuracy), np.std(accuracy)))
     print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))
     lfw_time = time.time() - start_time
     # Add validation loss and accuracy to summary
     summary = tf.Summary()
-    #pylint: disable=maybe-no-member
-    summary.value.add(tag='lfw/accuracy', simple_value=np.mean(accuracy))
-    summary.value.add(tag='lfw/val_rate', simple_value=val)
-    summary.value.add(tag='lfw/tpr', simple_value=np.mean(tpr))
-    summary.value.add(tag='lfw/best_threshold', simple_value=best_threshold)
-    summary.value.add(tag='lfw/threshold_lowfar', simple_value=threshold_lowfar)
-    summary.value.add(tag='lfw/tpr_lowfar', simple_value=tpr_lowfar)
-    summary.value.add(tag='lfw/threshold_lowfar', simple_value=threshold_lowfar)
-    summary.value.add(tag='lfw/acc_lowfar', simple_value=np.mean(acc_lowfar))
-    summary.value.add(tag='time/lfw', simple_value=lfw_time)
+    # pylint: disable=maybe-no-member
+    summary.value.add(tag=tag + '/accuracy', simple_value=np.mean(accuracy))
+    summary.value.add(tag=tag + '/val_rate', simple_value=val)
+    summary.value.add(tag=tag + '/best_threshold', simple_value=best_threshold)
+    summary.value.add(tag=tag + '/val_rate_threshold', simple_value=threshold_lowfar)
+    summary.value.add(tag='time/' + tag, simple_value=lfw_time)
     summary_writer.add_summary(summary, step)
-    with open(os.path.join(log_dir,'lfw_result.txt'),'at') as f:
+    with open(os.path.join(log_dir, tag + '_result.txt'), 'at') as f:
         f.write('%d\t%.5f\t%.5f\n' % (step, np.mean(accuracy), val))
+
+    result['accuracy'] = np.mean(accuracy)
+    result['val_rate'] = val
+    result['best_threshold'] = best_threshold
+
+    return result
 
 def save_variables_and_metagraph(sess, saver, summary_writer, model_dir, model_name, step):
     # Save the model checkpoint

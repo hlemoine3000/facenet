@@ -34,6 +34,7 @@ import numpy as np
 import argparse
 import os
 import sys
+import itertools
 from tensorflow.python.ops import data_flow_ops
 from sklearn import metrics
 from scipy.optimize import brentq
@@ -45,7 +46,15 @@ from src import cox
 def main(args):
 
     # Get the paths for the corresponding images
-    paths, actual_issame = cox.get_paths(args.cox_still_dir, args.cox_video_dir, ratio_neg=1.0, batch_size=args.cox_batch_size)
+    #paths, actual_issame = cox.get_paths(args.cox_still_dir, args.cox_video_dir, ratio_neg=1.0, batch_size=args.cox_batch_size)
+
+    # Read the file containing the pairs used for testing
+    cox_pairs = cox.read_pairs(os.path.expanduser(args.cox_pairs))
+
+    # Get the paths for the corresponding images
+    fold_list = cox.get_fold(cox_pairs)
+    validation_list = list(itertools.chain.from_iterable(fold_list[3:10]))
+    paths, actual_issame = cox.get_paths(os.path.expanduser(args.cox_still_dir), os.path.expanduser(args.cox_video_dir), cox_pairs, validation_list)
 
     with tf.Graph().as_default():
         with tf.Session() as sess:
@@ -136,8 +145,8 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
 
     print('Accuracy: %2.5f+-%2.5f' % (np.mean(accuracy), np.std(accuracy)))
     print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))
-    print('TPR: {}'.format(tpr))
-    print('FPR: {}'.format(fpr))
+    print('TPR: {}'.format(np.mean(tpr)))
+    print('FPR: {}'.format(np.mean(fpr)))
     print('Best Treshold: {}'.format(best_threshold))
     print('Treshold FAR=0.001: {}'.format(threshold_lowfar))
     # auc = metrics.auc(fpr, tpr)
@@ -159,6 +168,8 @@ def parse_arguments(argv):
                         help='Could be either a directory containing the meta_file and ckpt_file or a model protobuf (.pb) file')
     parser.add_argument('--image_size', type=int,
                         help='Image size (height, width) in pixels.', default=160)
+    parser.add_argument('--cox_pairs', type=str,
+                        help='The file containing the pairs to use for validation.', default='data/cox_pairs.txt')
     parser.add_argument('--cox_nrof_folds', type=int,
                         help='Number of folds to use for cross validation. Mainly used for testing.', default=10)
     parser.add_argument('--distance_metric', type=int,

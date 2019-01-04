@@ -6,24 +6,24 @@ if __name__ == '__main__':
     args = Namespace(
         alpha=0.2,
         batch_size=90,
-        embedding_size=512,
+        embedding_size=128,
         epoch_size=1000,
         gpu_memory_fraction=1.0,
         image_size=160,
         images_per_person=5,
         keep_probability=1.0,
-        learning_rate=0.05,
+        learning_rate=0.1,
         learning_rate_decay_epochs=4,
         learning_rate_decay_factor=0.98,
-        learning_rate_schedule_file='data/learning_rate_schedule.txt',
-        max_nrof_epochs=500,
+        learning_rate_schedule_file='no',#'data/learning_rate_schedule_classifier_vggface2.txt',
+        max_nrof_epochs=1000,
         model_def='src.models.inception_resnet_v2',
         moving_average_decay=0.9999,
-        optimizer='ADAGRAD', #'ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'
+        optimizer='ADAM', #'ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'
         people_per_batch=720,
         pretrained_model=None,
         random_crop=False,
-        random_flip=False,
+        random_flip=True,
         seed=666,
         weight_decay=2e-4,
 
@@ -34,8 +34,8 @@ if __name__ == '__main__':
 
         # data_dir='/export/livia/Database/COX-S2V/Aligned-COX-S2V-Video/video2',
         data_dir='/export/livia/data/lemoineh/vggface2/train_182',
-        models_base_dir='/export/livia/data/lemoineh/facenet/models',
-        logs_base_dir='/export/livia/data/lemoineh/facenet/logs'
+        models_base_dir='/export/livia/data/lemoineh/facenet/Optimizer_test/models',
+        logs_base_dir='/export/livia/data/lemoineh/facenet/Optimizer_test/logs'
 
     #     train_tripletloss.py.
     #         python

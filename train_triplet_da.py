@@ -1,31 +1,36 @@
-from src import train_tripletloss_cox
+from src import train_tripletloss_da
 from argparse import Namespace
 
 if __name__ == '__main__':
 
     args = Namespace(
         alpha=0.2,
-        batch_size=90,
+        batch_size=72,
         embedding_size=512,
-        epoch_size=100,
+        epoch_size=1000,
         gpu_memory_fraction=1.0,
         image_size=160,
         images_per_person=5,
         keep_probability=1.0,
+        lamb=0.01, # Adverserial loss weight
+        zeta=0.0,
         learning_rate=0.001,
         learning_rate_decay_epochs=4,
         learning_rate_decay_factor=1.0,
         learning_rate_schedule_file='data/learning_rate_schedule.txt',
-        max_nrof_epochs=20,
+        max_nrof_epochs=1000,
         model_def='src.models.inception_resnet_v2',
         moving_average_decay=0.9999,
         optimizer='ADAGRAD', #'ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'
-        people_per_batch=300, # 720
-        pretrained_model='/export/livia/data/lemoineh/facenet/models/20181001-122238/model-20181001-122238.ckpt-498379',
+        people_per_batch=720, # 720
+        pretrained_model='/export/livia/data/lemoineh/facenet/models/test_3/model-20181001-122238.ckpt-500514',
         random_crop=False,
         random_flip=False,
         seed=666,
         weight_decay=2e-4,
+
+        vggface2_train_dir='/export/livia/data/lemoineh/vggface2/train_182',
+        vggface2_val_dir='/export/livia/data/lemoineh/vggface2/test_182',
 
         # Parameters for validation on LFW
         lfw_dir='/export/livia/data/lethanh/lfw/lfw_mtcnnpy_160',
@@ -33,11 +38,14 @@ if __name__ == '__main__':
         lfw_pairs='data/pairs.txt',
 
         # data_dir='/export/livia/Database/COX-S2V/Aligned-COX-S2V-Video/video2',
-        still_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Still-MTCNN160',
-        video_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Video-MTCNN160_MARG44/video2',
-        models_base_dir='/export/livia/data/lemoineh/facenet/COX_finetune/models',
-        logs_base_dir='/export/livia/data/lemoineh/facenet/COX_finetune/logs',
-        cox_pairs = 'data/cox_video2/cox_pairs_40000.txt'
+        cox_still_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Still-MTCNN160',
+        cox_video_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Video-MTCNN160_MARG44/video2',
+        cox_pairs='data/cox_video2/cox_pairs_40000.txt',
+
+
+        models_base_dir='/export/livia/data/lemoineh/facenet/domain_adaptation/models',
+        logs_base_dir='/export/livia/data/lemoineh/facenet/domain_adaptation/logs'
+
 
     #     train_tripletloss.py.
     #         python
@@ -57,4 +65,4 @@ if __name__ == '__main__':
 
     )
 
-    train_tripletloss_cox.main(args)
+    train_tripletloss_da.main(args)
