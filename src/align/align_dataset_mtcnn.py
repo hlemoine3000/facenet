@@ -35,11 +35,12 @@ import random
 
 from time import sleep
 
-# import facenet
+import facenet
+from align import detect_face
 # import align.detect_face
 
-from src import facenet
-from src.align import detect_face
+# from src import facenet
+# from src.align import detect_face
 
 def main(args):
     sleep(random.random())

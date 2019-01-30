@@ -41,6 +41,7 @@ from tensorflow.python.platform import gfile
 import math
 from six import iteritems
 
+
 def triplet_loss(anchor, positive, negative, alpha):
     """Calculate the triplet loss according to the FaceNet paper
     
@@ -333,12 +334,22 @@ def get_dataset(path, has_class_directories=True):
   
     return dataset
 
-def get_image_paths(facedir):
+def get_image_paths(image_dir):
     image_paths = []
-    if os.path.isdir(facedir):
-        images = os.listdir(facedir)
-        image_paths = [os.path.join(facedir,img) for img in images]
+    if os.path.isdir(image_dir):
+        images = os.listdir(image_dir)
+        image_paths = [os.path.join(image_dir,img) for img in images]
     return image_paths
+
+def add_extension(path):
+    if os.path.exists(path + '.jpg'):
+        return path + '.jpg'
+    elif os.path.exists(path + '.JPG'):
+        return path + '.JPG'
+    elif os.path.exists(path + '.png'):
+        return path + '.png'
+    else:
+        raise RuntimeError('No file "%s" with extension png or jpg.' % path)
   
 def split_dataset(dataset, split_ratio, min_nrof_images_per_class, mode):
     if mode=='SPLIT_CLASSES':

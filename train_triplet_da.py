@@ -12,11 +12,11 @@ if __name__ == '__main__':
         image_size=160,
         images_per_person=5,
         keep_probability=1.0,
-        lamb=0.01, # Adverserial loss weight
-        zeta=0.0,
-        learning_rate=0.001,
+        lamb=0.1, # Adverserial loss weight
+        zeta=1.0, # Triplet loss weight
+        learning_rate=0.0005,
         learning_rate_decay_epochs=4,
-        learning_rate_decay_factor=1.0,
+        learning_rate_decay_factor=0.98,
         learning_rate_schedule_file='data/learning_rate_schedule.txt',
         max_nrof_epochs=1000,
         model_def='src.models.inception_resnet_v2',
@@ -36,15 +36,16 @@ if __name__ == '__main__':
         lfw_dir='/export/livia/data/lethanh/lfw/lfw_mtcnnpy_160',
         lfw_nrof_folds=10,
         lfw_pairs='data/pairs.txt',
+        lfw_projection='data/lfw_projection.txt',
 
         # data_dir='/export/livia/Database/COX-S2V/Aligned-COX-S2V-Video/video2',
         cox_still_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Still-MTCNN160',
         cox_video_dir='/export/livia/data/lemoineh/COX-S2V/COX-S2V-Video-MTCNN160_MARG44/video2',
-        cox_pairs='data/cox_video2/cox_pairs_40000.txt',
+        cox_pairs='data/cox/video2/pairs.txt',
+        cox_projection='data/cox/cox_projection.txt',
 
-
-        models_base_dir='/export/livia/data/lemoineh/facenet/domain_adaptation/models',
-        logs_base_dir='/export/livia/data/lemoineh/facenet/domain_adaptation/logs'
+        models_base_dir='/export/livia/data/lemoineh/facenet/test/models',
+        logs_base_dir='/export/livia/data/lemoineh/facenet/test/logs'
 
 
     #     train_tripletloss.py.

@@ -275,8 +275,13 @@ def train(args, sess, dataset, epoch, image_paths_placeholder, labels_placeholde
 
         # Select triplets based on the embeddings
         print('Selecting suitable triplets for training')
-        triplets, nrof_random_negs, nrof_triplets = tripletloss.select_triplets_cox(video_emb_array, still_emb_array, num_per_class,
-            video_paths, still_paths, args.people_per_batch, args.alpha)
+        triplets, nrof_random_negs, nrof_triplets = tripletloss.select_triplets_cox(video_emb_array,
+                                                                                    still_emb_array,
+                                                                                    num_per_class,
+                                                                                    video_paths,
+                                                                                    still_paths,
+                                                                                    args.people_per_batch,
+                                                                                    args.alpha)
         selection_time = time.time() - start_time
         print('(nrof_random_negs, nrof_triplets) = (%d, %d): time=%.3f seconds' % 
             (nrof_random_negs, nrof_triplets, selection_time))

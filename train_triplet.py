@@ -31,6 +31,7 @@ if __name__ == '__main__':
         lfw_dir='/export/livia/data/lethanh/lfw/lfw_mtcnnpy_160',
         lfw_nrof_folds=10,
         lfw_pairs='data/pairs.txt',
+        lfw_projection='data/lfw_projection.txt',
 
         # data_dir='/export/livia/Database/COX-S2V/Aligned-COX-S2V-Video/video2',
         data_dir='/export/livia/data/lemoineh/vggface2/train_182',

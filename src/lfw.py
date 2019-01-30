@@ -73,6 +73,40 @@ def get_paths(lfw_dir, pairs):
         print('Skipped %d image pairs' % nrof_skipped_pairs)
     
     return path_list, issame_list
+
+
+def get_paths_from_file(lfw_dir, subject_filename, max_subject=10, max_images_per_subject=10):
+    path_list = []
+    label_list = []
+
+    subjects_list = []
+    with open(subject_filename, 'r') as f:
+        for line in f.readlines()[1:]:
+            subjects_list.append(line.strip())
+
+    num_subject = 0
+    for subject in subjects_list:
+        subject_dir = os.path.join(lfw_dir, subject)
+        subject_images_list = os.listdir(subject_dir)
+
+        images_per_subject = 0
+        for subject_image in subject_images_list:
+            path = os.path.join(subject_dir, subject_image)
+
+            if os.path.exists(path):
+                path_list.append(path)
+                label_list.append(subject)
+                images_per_subject += 1
+
+            if images_per_subject > max_images_per_subject:
+                break
+
+        num_subject += 1
+        if num_subject > max_subject:
+            break
+
+
+    return path_list, label_list
   
 def add_extension(path):
     if os.path.exists(path+'.jpg'):

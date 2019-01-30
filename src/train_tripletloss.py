@@ -36,6 +36,7 @@ import numpy as np
 import importlib
 import itertools
 import argparse
+import csv
 from src import facenet
 from src import lfw
 from src import tripletloss
@@ -77,7 +78,15 @@ def main(args):
         pairs = lfw.read_pairs(os.path.expanduser(args.lfw_pairs))
         # Get the paths for the corresponding images
         lfw_paths, actual_issame = lfw.get_paths(os.path.expanduser(args.lfw_dir), pairs)
-        
+        # Get the paths for embeddings projection
+        lfw_proj_paths, lfw_proj_labels = lfw.get_paths_from_file(args.lfw_dir, args.lfw_projection)
+
+        # Create label map if does not exist
+        if not os.path.isfile(os.path.join(log_dir, 'meta.tsv')):
+            with open(os.path.join(log_dir, 'meta.tsv'), "w") as meta_file:
+                csvWriter = csv.writer(meta_file, delimiter='\t')
+                csvWriter.writerows(np.array([lfw_proj_labels]).T)
+
     
     with tf.Graph().as_default():
         tf.set_random_seed(args.seed)
@@ -180,6 +189,20 @@ def main(args):
             while epoch < args.max_nrof_epochs:
                 step = sess.run(global_step, feed_dict=None)
                 epoch = step // args.epoch_size
+
+                # Evaluate on LFW
+                if args.lfw_dir:
+                    evaluate(sess, lfw_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
+                             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op,
+                             actual_issame, args.batch_size,
+                             args.lfw_nrof_folds, log_dir, step, summary_writer, args.embedding_size)
+
+                    save_embeddings(sess, lfw_proj_paths, lfw_proj_labels, epoch, embeddings, labels_batch, image_paths_placeholder,
+                                    labels_placeholder,
+                                    batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder,
+                                    enqueue_op, args.batch_size, log_dir,
+                                    args.embedding_size, tag='lfw')
+
                 # Train for one epoch
                 train(args, sess, train_set, epoch, image_paths_placeholder, labels_placeholder, labels_batch,
                     batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, input_queue, global_step, 
@@ -188,12 +211,6 @@ def main(args):
 
                 # Save variables and the metagraph if it doesn't exist already
                 save_variables_and_metagraph(sess, saver, summary_writer, model_dir, subdir, step)
-
-                # Evaluate on LFW
-                if args.lfw_dir:
-                    evaluate(sess, lfw_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder, 
-                            batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame, args.batch_size, 
-                            args.lfw_nrof_folds, log_dir, step, summary_writer, args.embedding_size)
 
     return model_dir
 
@@ -342,6 +359,54 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
     summary_writer.add_summary(summary, step)
     with open(os.path.join(log_dir,'lfw_result.txt'),'at') as f:
         f.write('%d\t%.5f\t%.5f\n' % (step, np.mean(accuracy), val))
+
+def save_embeddings(sess, image_paths, labels, epoch, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
+             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op,
+             batch_size, log_dir, embedding_size, tag='lfw'):
+
+    img_paths = image_paths
+
+    # Fill the image extractor with dumb images if necessary
+    # There are 3 parallel image extractor
+    real_nrof_images = len(img_paths)
+    num_missing = real_nrof_images % 3
+    if not num_missing == 0:
+        for i in range(1, num_missing):
+            img_paths.append(img_paths[0])
+        nrof_images = len(img_paths)
+    else:
+        nrof_images = real_nrof_images
+
+
+    start_time = time.time()
+    # Run forward pass to calculate embeddings
+    print('Running forward pass ' + tag + ' images: ', end='')
+
+    labels_array = np.reshape(np.arange(nrof_images), (-1, 3))
+    image_paths_array = np.reshape(np.expand_dims(np.array(img_paths), 1), (-1, 3))
+    sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
+    emb_array = np.zeros((nrof_images, embedding_size))
+    nrof_batches = int(np.ceil(nrof_images / batch_size))
+    label_check_array = np.zeros((nrof_images,))
+    for i in xrange(nrof_batches):
+        batch_size = min(nrof_images - i * batch_size, batch_size)
+        emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
+                                                                   learning_rate_placeholder: 0.0,
+                                                                   phase_train_placeholder: False})
+        emb_array[lab, :] = emb
+        label_check_array[lab] = 1
+
+    emb_array = emb_array[0: real_nrof_images]
+    print('%.3f' % (time.time() - start_time))
+
+    assert (np.all(label_check_array == 1))
+
+    # Save embeddings for later projection
+    print('Save {} embeddings for projection.'.format(len(emb_array)))
+
+    with open(os.path.join(log_dir, 'emb{}.tsv'.format(epoch)), "a") as emb_csv:
+        csvWriter = csv.writer(emb_csv, delimiter='\t')
+        csvWriter.writerows(emb_array)
 
 def save_variables_and_metagraph(sess, saver, summary_writer, model_dir, model_name, step):
     # Save the model checkpoint

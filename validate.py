@@ -35,31 +35,95 @@ import argparse
 import os
 import sys
 import csv
+import itertools
 from tensorflow.python.ops import data_flow_ops
 from sklearn import metrics
 from scipy.optimize import brentq
 from scipy import interpolate
 from src import facenet
 from src import lfw
-
+from src import cox
+from src import config_reader
 
 def main(args):
+    config = config_reader.validation_config(args.config)
 
-    # Read the file containing the pairs used for testing
-    pairs = lfw.read_pairs(os.path.expanduser(args.lfw_pairs))
+    # Extract datasets
+    lfw_paths, lfw_actual_issame = [], []
+    cox_paths, cox_actual_issame = [], []
 
-    # Get the paths for the corresponding images
-    paths, actual_issame = lfw.get_paths(os.path.expanduser(args.lfw_dir), pairs)
+    lfw_proj_paths, lfw_proj_labels = [], []
+    cox_proj_paths, cox_proj_labels = [], []
+
+    # LFW
+    if config.eval_lfw:
+
+        print('Fetching LFW evaluation pairs.')
+        # Read the file containing the pairs used for testing
+        pairs = lfw.read_pairs(os.path.expanduser(config.lfw_pairs))
+        # Get the paths for the corresponding images
+        lfw_paths, lfw_actual_issame = lfw.get_paths(os.path.expanduser(config.lfw_dir), pairs)
+        # Get the paths for embeddings projection
 
     # Get the paths for embeddings projection
-    lfw_proj_paths, lfw_proj_labels = lfw.get_paths_from_file(args.lfw_dir, args.lfw_projection)
+    if config.save_lfw_projections:
+
+        print('Fetching LFW projections samples.')
+        lfw_proj_paths, lfw_proj_labels = lfw.get_paths_from_file(config.lfw_dir, config.lfw_projection,
+                                                                      max_subject=config.max_subjects,
+                                                                      max_images_per_subject=config.max_emb_per_subject)
+
+    # COX
+    if config.eval_cox or config.save_cox_projections:
+        paths, actual_issame = [], []
+        proj_paths, proj_labels = [], []
+
+        train_folds = [0, 1, 2]
+        evaluation_folds = [3, 4, 5, 6, 7, 8, 9]
+
+        for i, video_dir in enumerate(config.cox_video_name):
+
+            cox_pairs_path = os.path.join(config.cox_pairs, video_dir, 'pairs.txt')
+            cox_still_path = config.cox_still_dir
+            cox_video_path = os.path.join(config.cox_video_dir, video_dir)
+
+            cox_dataset = cox.cox_data(cox_still_path,
+                                       cox_video_path,
+                                       cox_pairs_path)
+
+            if config.eval_cox:
+
+                print('Fetching COX {} evaluation pairs.'.format(video_dir))
+
+                paths, actual_issame = cox_dataset.get_pairs(evaluation_folds)
+
+                cox_paths += paths
+                cox_actual_issame += actual_issame
+
+            if config.save_cox_projections:
+
+                print('Fetching COX {} projections samples.'.format(video_dir))
+
+                proj_paths, proj_labels = cox_dataset.get_paths_from_file(config.cox_projection,
+                                                                          max_subject=config.max_subjects,
+                                                                          max_images_per_subject=config.max_emb_per_subject,
+                                                                          tag='_' + video_dir)
+
+                cox_proj_paths += proj_paths
+                cox_proj_labels += proj_labels
+
+        del paths, actual_issame, proj_paths, proj_labels
+
+    # Set up projection paths
+    projection_paths = lfw_proj_paths + cox_proj_paths
+    proj_labels = lfw_proj_labels + cox_proj_labels
 
     # Create label map if does not exist
-    if not os.path.exists(args.emb_dir):
-        os.makedirs(args.emb_dir)
-    with open(os.path.join(args.emb_dir, 'meta.tsv'), "w") as meta_file:
+    if not os.path.exists(config.emb_dir):
+        os.makedirs(config.emb_dir)
+    with open(os.path.join(config.emb_dir, 'meta.tsv'), "w") as meta_file:
         csvWriter = csv.writer(meta_file, delimiter='\t')
-        csvWriter.writerows(np.array([lfw_proj_labels]).T)
+        csvWriter.writerows(np.array([proj_labels]).T)
 
     with tf.Graph().as_default():
       
@@ -72,17 +136,16 @@ def main(args):
             phase_train_placeholder = tf.placeholder(tf.bool, name='phase_train')
  
             nrof_preprocess_threads = 4
-            image_size = (args.image_size, args.image_size)
             eval_input_queue = data_flow_ops.FIFOQueue(capacity=2000000,
                                         dtypes=[tf.string, tf.int32, tf.int32],
                                         shapes=[(1,), (1,), (1,)],
                                         shared_name=None, name=None)
             eval_enqueue_op = eval_input_queue.enqueue_many([image_paths_placeholder, labels_placeholder, control_placeholder], name='eval_enqueue_op')
-            image_batch, label_batch = facenet.create_input_pipeline(eval_input_queue, image_size, nrof_preprocess_threads, batch_size_placeholder)
+            image_batch, label_batch = facenet.create_input_pipeline(eval_input_queue, (config.image_size, config.image_size), nrof_preprocess_threads, batch_size_placeholder)
      
             # Load the model
             input_map = {'image_batch': image_batch, 'label_batch': label_batch, 'phase_train': phase_train_placeholder}
-            facenet.load_model(args.model, input_map=input_map)
+            facenet.load_model(config.model, input_map=input_map)
 
             # Get output tensor
             embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
@@ -90,29 +153,39 @@ def main(args):
             coord = tf.train.Coordinator()
             tf.train.start_queue_runners(coord=coord, sess=sess)
 
-            save_embeddings(sess,
-                            lfw_proj_paths,
-                            label_batch,
-                            embeddings,
-                            image_paths_placeholder,
-                            labels_placeholder,
-                            batch_size_placeholder,
-                            control_placeholder,
-                            phase_train_placeholder,
-                            eval_enqueue_op,
-                            args.emb_dir)
+            if projection_paths:
+                save_embeddings(sess,
+                                projection_paths,
+                                label_batch,
+                                embeddings,
+                                image_paths_placeholder,
+                                labels_placeholder,
+                                batch_size_placeholder,
+                                control_placeholder,
+                                phase_train_placeholder,
+                                eval_enqueue_op,
+                                config.emb_dir)
 
-            evaluate(sess, eval_enqueue_op, image_paths_placeholder, labels_placeholder, phase_train_placeholder, batch_size_placeholder, control_placeholder,
-                embeddings, label_batch, paths, actual_issame, args.lfw_batch_size, args.lfw_nrof_folds, args.distance_metric, args.subtract_mean,
-                args.use_flipped_images, args.use_fixed_image_standardization)
+            # Evaluate on LFW
+            if lfw_paths:
+                evaluate(sess, eval_enqueue_op, image_paths_placeholder, labels_placeholder, phase_train_placeholder,
+                         batch_size_placeholder, control_placeholder,
+                         embeddings, label_batch, lfw_paths, lfw_actual_issame, config.batch_size, config.lfw_nrof_folds,
+                         config.distance_metric, config.subtract_mean,
+                         config.use_flipped_images, config.use_fixed_image_standardization, tag='LFW')
 
-
-
+            # Evaluate on COX-S2V
+            if cox_paths:
+                evaluate(sess, eval_enqueue_op, image_paths_placeholder, labels_placeholder, phase_train_placeholder,
+                         batch_size_placeholder, control_placeholder,
+                         embeddings, label_batch, cox_paths, cox_actual_issame, config.batch_size, config.lfw_nrof_folds,
+                         config.distance_metric, config.subtract_mean,
+                         config.use_flipped_images, config.use_fixed_image_standardization, tag='COX')
               
 def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phase_train_placeholder, batch_size_placeholder, control_placeholder,
-        embeddings, labels, image_paths, actual_issame, batch_size, nrof_folds, distance_metric, subtract_mean, use_flipped_images, use_fixed_image_standardization):
+        embeddings, labels, image_paths, actual_issame, batch_size, nrof_folds, distance_metric, subtract_mean, use_flipped_images, use_fixed_image_standardization, tag='LFW'):
     # Run forward pass to calculate embeddings
-    print('Runnning forward pass on LFW images')
+    print('Runnning forward pass on ' + tag + ' images')
     
     # Enqueue one epoch of image paths and labels
     nrof_embeddings = len(actual_issame)*2  # nrof_pairs * nrof_images_per_pair
@@ -131,7 +204,7 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
     sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array, control_placeholder: control_array})
     
     embedding_size = int(embeddings.get_shape()[1])
-    assert nrof_images % batch_size == 0, 'The number of LFW images ({}) must be an integer multiple of the LFW batch size ({})'.format(nrof_images, batch_size)
+    assert nrof_images % batch_size == 0, 'The number of {} images ({}) must be an integer multiple of the batch size ({})'.format(tag, nrof_images, batch_size)
     nrof_batches = nrof_images // batch_size
     emb_array = np.zeros((nrof_images, embedding_size))
     lab_array = np.zeros((nrof_images,))
@@ -161,9 +234,9 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
     print('Threshold: %1.3f @ FAR=%2.5f' % (threshold_lowfar, far))
 
     auc = metrics.auc(fpr, tpr)
-    print('Area Under Curve (AUC): %1.3f' % auc)
+    print('Area Under Curve (AUC): %1.6f' % auc)
     eer = brentq(lambda x: 1. - x - interpolate.interp1d(fpr, tpr)(x), 0., 1.)
-    print('Equal Error Rate (EER): %1.3f' % eer)
+    print('Equal Error Rate (EER): %1.6f' % eer)
 
 def save_embeddings(sess, image_paths, labels, embeddings, image_paths_placeholder, labels_placeholder,
              batch_size_placeholder, control_placeholder, phase_train_placeholder, enqueue_op, log_dir):
@@ -212,35 +285,16 @@ def save_embeddings(sess, image_paths, labels, embeddings, image_paths_placehold
     with open(os.path.join(log_dir, 'emb.tsv'), "w") as emb_csv:
         csvWriter = csv.writer(emb_csv, delimiter='\t')
         csvWriter.writerows(emb_array)
-    
+
 def parse_arguments(argv):
     parser = argparse.ArgumentParser()
-    
-    parser.add_argument('lfw_dir', type=str,
-        help='Path to the data directory containing aligned LFW face patches.')
-    parser.add_argument('--emb_dir', type=str,
-        help='Path to the projection embeddings directory', default='emb/')
-    parser.add_argument('--lfw_batch_size', type=int,
-        help='Number of images to process in a batch in the LFW test set.', default=100)
-    parser.add_argument('model', type=str, 
-        help='Could be either a directory containing the meta_file and ckpt_file or a model protobuf (.pb) file')
-    parser.add_argument('--image_size', type=int,
-        help='Image size (height, width) in pixels.', default=160)
-    parser.add_argument('--lfw_pairs', type=str,
-        help='The file containing the pairs to use for validation.', default='data/pairs.txt')
-    parser.add_argument('--lfw_projection', type=str,
-        help='The file containing the subject for embeddings projection.', default='data/lfw_projection.txt')
-    parser.add_argument('--lfw_nrof_folds', type=int,
-        help='Number of folds to use for cross validation. Mainly used for testing.', default=10)
-    parser.add_argument('--distance_metric', type=int,
-        help='Distance metric  0:euclidian, 1:cosine similarity.', default=0)
-    parser.add_argument('--use_flipped_images', 
-        help='Concatenates embeddings for the image and its horizontally flipped counterpart.', action='store_true')
-    parser.add_argument('--subtract_mean', 
-        help='Subtract feature mean before calculating distance.', action='store_true')
-    parser.add_argument('--use_fixed_image_standardization', 
-        help='Performs fixed standardization of images.', action='store_true')
+
+    parser.add_argument('--config', type=str,
+        help='Path to the configuration file', default='config/validation.ini')
+
     return parser.parse_args(argv)
 
+
 if __name__ == '__main__':
+
     main(parse_arguments(sys.argv[1:]))
