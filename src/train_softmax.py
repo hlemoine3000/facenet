@@ -36,7 +36,7 @@ import numpy as np
 import importlib
 import argparse
 import facenet
-import lfw
+from dataset import lfw
 import h5py
 import math
 import tensorflow.contrib.slim as slim

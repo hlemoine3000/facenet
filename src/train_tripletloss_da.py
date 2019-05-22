@@ -38,11 +38,10 @@ import itertools
 import argparse
 import csv
 from src import facenet
-from src import lfw, cox
-from src import tripletloss, adversarialloss
+from dataset import cox, lfw
+from src import adversarialloss
 
 from tensorflow.python.ops import data_flow_ops
-from tensorflow.contrib.tensorboard.plugins import projector
 
 from six.moves import xrange  # @UnresolvedImport
 

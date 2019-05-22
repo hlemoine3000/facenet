@@ -32,7 +32,6 @@ import os
 import numpy as np
 from src import facenet
 
-
 # import facenet
 class ImageClass():
     "Stores the paths to images for a given class"

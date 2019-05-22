@@ -28,39 +28,163 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import importlib
 from subprocess import Popen, PIPE
 import tensorflow as tf
 import numpy as np
 from scipy import misc
 from sklearn.model_selection import KFold
+from sklearn import metrics, preprocessing
 from scipy import interpolate
 from tensorflow.python.training import training
+from tensorflow.python.ops import data_flow_ops
 import random
 import re
 from tensorflow.python.platform import gfile
 import math
 from six import iteritems
 
+from src import config_reader
+from src.tripletloss import triplet_loss_op
 
-def triplet_loss(anchor, positive, negative, alpha):
-    """Calculate the triplet loss according to the FaceNet paper
-    
-    Args:
-      anchor: the embeddings for the anchor images.
-      positive: the embeddings for the positive images.
-      negative: the embeddings for the negative images.
-  
-    Returns:
-      the triplet loss according to the FaceNet paper as a float tensor.
-    """
-    with tf.variable_scope('triplet_loss'):
-        pos_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, positive)), 1)
-        neg_dist = tf.reduce_sum(tf.square(tf.subtract(anchor, negative)), 1)
-        
-        basic_loss = tf.add(tf.subtract(pos_dist,neg_dist), alpha)
-        loss = tf.reduce_mean(tf.maximum(basic_loss, 0.0), 0)
-      
-    return loss
+class eval_container:
+    def __init__(self,
+                 name,
+                 image_paths,
+                 actual_issame):
+
+        self.name = name
+        self.image_paths = image_paths
+        self.actual_issame = actual_issame
+
+
+class triplet_model():
+    def __init__(self,
+                 config: config_reader.triplets_afix_config,
+                 num_parallel=3):
+
+        with tf.Graph().as_default():
+
+            network = importlib.import_module(config.model_def)
+
+            tf.set_random_seed(config.seed)
+            global_step = tf.Variable(0, trainable=False)
+
+            # Placeholder for the learning rate
+            learning_rate_placeholder = tf.placeholder(tf.float32, name='learning_rate')
+
+            batch_size_placeholder = tf.placeholder(tf.int32, name='batch_size')
+
+            phase_train_placeholder = tf.placeholder(tf.bool, name='phase_train')
+
+            image_paths_placeholder = tf.placeholder(tf.string, shape=(None, num_parallel), name='image_paths')
+            labels_placeholder = tf.placeholder(tf.int64, shape=(None, num_parallel), name='labels')
+
+            input_queue = data_flow_ops.FIFOQueue(capacity=100000,
+                                                  dtypes=[tf.string, tf.int64],
+                                                  shapes=[(num_parallel,), (num_parallel,)],
+                                                  shared_name=None, name=None)
+            self.enqueue_op = input_queue.enqueue_many([image_paths_placeholder, labels_placeholder])
+
+            nrof_preprocess_threads = 4
+            images_and_labels = []
+            for _ in range(nrof_preprocess_threads):
+                filenames, label = input_queue.dequeue()
+                images = []
+                for filename in tf.unstack(filenames):
+                    file_contents = tf.read_file(filename)
+                    image = tf.image.decode_image(file_contents, channels=3)
+
+                    if config.random_crop:
+                        image = tf.random_crop(image, [config.image_size, config.image_size, 3])
+                    else:
+                        image = tf.image.resize_image_with_crop_or_pad(image, config.image_size, config.image_size)
+                    if config.random_flip:
+                        image = tf.image.random_flip_left_right(image)
+
+                    # pylint: disable=no-member
+                    image.set_shape((config.image_size, config.image_size, 3))
+                    images.append(tf.image.per_image_standardization(image))
+                images_and_labels.append([images, label])
+
+            self.image_batch, self.labels_batch = tf.train.batch_join(
+                images_and_labels, batch_size=batch_size_placeholder,
+                shapes=[(config.image_size, config.image_size, 3), ()], enqueue_many=True,
+                capacity=4 * nrof_preprocess_threads * config.batch_size,
+                allow_smaller_final_batch=True)
+            self.image_batch = tf.identity(self.image_batch, 'image_batch')
+            self.image_batch = tf.identity(self.image_batch, 'input')
+            self.labels_batch = tf.identity(self.labels_batch, 'label_batch')
+
+            # Build the inference graph
+            prelogits, _ = network.inference(self.image_batch, config.keep_probability,
+                                             phase_train=phase_train_placeholder,
+                                             bottleneck_layer_size=config.embedding_size,
+                                             weight_decay=config.weight_decay)
+
+            self.embeddings = tf.nn.l2_normalize(prelogits, 1, 1e-10, name='embeddings')
+            # Split embeddings into anchor, positive and negative and calculate triplet loss
+            anchor, positive, negative = tf.unstack(tf.reshape(self.embeddings, [-1, 3, config.embedding_size]), 3, 1)
+            triplet_loss = triplet_loss_op(anchor, positive, negative, config.alpha)
+
+            learning_rate = tf.train.exponential_decay(learning_rate_placeholder, global_step,
+                                                       config.learning_rate_decay_epochs * config.epoch_size,
+                                                       config.learning_rate_decay_factor, staircase=True)
+            tf.summary.scalar('learning_rate', learning_rate)
+
+            # Calculate the total losses
+            regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            total_loss = tf.add_n([triplet_loss] + regularization_losses, name='total_loss')
+
+            # Build a Graph that trains the model with one batch of examples and updates the model parameters
+            self.train_op = train(total_loss, global_step, config.optimizer,
+                             learning_rate, config.moving_average_decay, tf.global_variables())
+
+class model_container:
+    def __init__(self,
+                 enqueue_op=None,
+                 embeddings=None,
+                 labels_batch=None,
+                 train_op=None,
+                 summary_op=None,
+                 summary_writer=None,
+                 total_loss=None,
+                 triplet_loss=None,
+                 adv_loss=None,
+                 image_paths_placeholder=None,
+                 labels_placeholder=None,
+                 batch_size_placeholder=None,
+                 learning_rate_placeholder=None,
+                 phase_train_placeholder=None,
+                 control_placeholder=None,
+                 learning_rate=None,
+                 batch_size=None,
+                 embedding_size=None):
+
+        # Operations
+        self.enqueue_op = enqueue_op
+        self.embeddings = embeddings
+        self.labels_batch = labels_batch
+        self.train_op = train_op
+        self.summary_op = summary_op
+        self.summary_writer = summary_writer
+
+        self.total_loss = total_loss
+        self.triplet_loss = triplet_loss
+        self.adv_loss = adv_loss
+
+        # Placeholders
+        self.image_paths_placeholder = image_paths_placeholder
+        self.labels_placeholder = labels_placeholder
+        self.batch_size_placeholder = batch_size_placeholder
+        self.learning_rate_placeholder = learning_rate_placeholder
+        self.phase_train_placeholder = phase_train_placeholder
+        self.control_placeholder = control_placeholder
+
+        # Parameters
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.embedding_size = embedding_size
   
 def center_loss(features, label, alfa, nrof_classes):
     """Center loss based on the paper "A Discriminative Feature Learning Approach for Deep Face Recognition"
@@ -473,6 +597,64 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
           
         tpr = np.mean(tprs,0)
         fpr = np.mean(fprs,0)
+    return tpr, fpr, accuracy, best_threshold
+
+
+def calculate_roc2(thresholds, embeddings1, embeddings2, actual_issame, nrof_folds=10, distance_metric=0,
+                  subtract_mean=False):
+    assert (embeddings1.shape[0] == embeddings2.shape[0])
+    assert (embeddings1.shape[1] == embeddings2.shape[1])
+    nrof_pairs = min(len(actual_issame), embeddings1.shape[0])
+    nrof_thresholds = len(thresholds)
+    k_fold = KFold(n_splits=nrof_folds, shuffle=False)
+
+    tprs = np.zeros((nrof_folds, nrof_thresholds))
+    fprs = np.zeros((nrof_folds, nrof_thresholds))
+    tpr = 0
+    fpr = 0
+    best_threshold = 0
+    accuracy = np.zeros((nrof_folds))
+
+    indices = np.arange(nrof_pairs)
+
+    dist = distance(embeddings1, embeddings2, distance_metric)
+
+    dist2 = dist.reshape(-1, 1)
+    scaler = preprocessing.MinMaxScaler()
+    scaler.fit(dist2)
+    norm_dist = scaler.transform(dist2)
+
+    scores = np.squeeze(np.ones(norm_dist.shape) - norm_dist)
+
+    pAUC = metrics.roc_auc_score(actual_issame, scores, max_fpr=0.2)
+    print('pAUC FAR=20%: {}'.format(pAUC))
+
+    AP = metrics.average_precision_score(actual_issame, scores)
+    print('AP: {}'.format(AP))
+
+    for fold_idx, (train_set, test_set) in enumerate(k_fold.split(indices)):
+        # if subtract_mean:
+        #     mean = np.mean(np.concatenate([embeddings1[train_set], embeddings2[train_set]]), axis=0)
+        # else:
+        #     mean = 0.0
+
+        # Find the best threshold for the fold
+        acc_train = np.zeros((nrof_thresholds))
+        for threshold_idx, threshold in enumerate(thresholds):
+            _, _, acc_train[threshold_idx] = calculate_accuracy(threshold, dist[train_set], actual_issame[train_set])
+        best_threshold_index = np.argmax(acc_train)
+        best_threshold = thresholds[best_threshold_index]
+        for threshold_idx, threshold in enumerate(thresholds):
+            tprs[fold_idx, threshold_idx], fprs[fold_idx, threshold_idx], _ = calculate_accuracy(threshold,
+                                                                                                 dist[test_set],
+                                                                                                 actual_issame[
+                                                                                                     test_set])
+        _, _, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index], dist[test_set],
+                                                      actual_issame[test_set])
+        # tpr, fpr, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index], dist[test_set], actual_issame[test_set])
+
+        tpr = np.mean(tprs, 0)
+        fpr = np.mean(fprs, 0)
     return tpr, fpr, accuracy, best_threshold
 
 def calculate_accuracy(threshold, dist, actual_issame):

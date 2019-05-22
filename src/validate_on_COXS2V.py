@@ -36,11 +36,8 @@ import os
 import sys
 import itertools
 from tensorflow.python.ops import data_flow_ops
-from sklearn import metrics
-from scipy.optimize import brentq
-from scipy import interpolate
 from src import facenet
-from src import cox
+from dataset import cox
 
 
 def main(args):
@@ -141,7 +138,7 @@ def evaluate(sess, enqueue_op, image_paths_placeholder, labels_placeholder, phas
     assert np.array_equal(lab_array, np.arange(
         nrof_images)) == True, 'Wrong labels used for evaluation, possibly caused by training examples left in the input pipeline'
     tpr, fpr, accuracy, val, val_std, far, best_threshold, threshold_lowfar, tpr_lowfar, acc_lowfar = cox.evaluate(embeddings, actual_issame, nrof_folds=nrof_folds,
-                                                                                                      distance_metric=distance_metric, subtract_mean=subtract_mean)
+                                                                                                                   distance_metric=distance_metric, subtract_mean=subtract_mean)
 
     print('Accuracy: %2.5f+-%2.5f' % (np.mean(accuracy), np.std(accuracy)))
     print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))

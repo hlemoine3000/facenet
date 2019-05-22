@@ -31,7 +31,7 @@ import tensorflow as tf
 import numpy as np
 import argparse
 import facenet
-import lfw
+from dataset import lfw
 import matplotlib.pyplot as plt
 from scipy import misc
 import os

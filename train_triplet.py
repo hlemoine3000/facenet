@@ -20,7 +20,7 @@ if __name__ == '__main__':
         model_def='src.models.inception_resnet_v2',
         moving_average_decay=0.9999,
         optimizer='ADAM', #'ADAGRAD', 'ADADELTA', 'ADAM', 'RMSPROP', 'MOM'
-        people_per_batch=720,
+        people_per_batch=8,
         pretrained_model=None,
         random_crop=False,
         random_flip=True,
@@ -28,15 +28,15 @@ if __name__ == '__main__':
         weight_decay=2e-4,
 
         # Parameters for validation on LFW
-        lfw_dir='/export/livia/data/lethanh/lfw/lfw_mtcnnpy_160',
+        lfw_dir='',
         lfw_nrof_folds=10,
         lfw_pairs='data/pairs.txt',
         lfw_projection='data/lfw_projection.txt',
 
         # data_dir='/export/livia/Database/COX-S2V/Aligned-COX-S2V-Video/video2',
-        data_dir='/export/livia/data/lemoineh/vggface2/train_182',
-        models_base_dir='/export/livia/data/lemoineh/facenet/Optimizer_test/models',
-        logs_base_dir='/export/livia/data/lemoineh/facenet/Optimizer_test/logs'
+        data_dir='/export/livia/data/lemoineh/dog_dataset/generated/dog_samples',
+        models_base_dir='/export/livia/data/lemoineh/facenet/dog_test/models',
+        logs_base_dir='/export/livia/data/lemoineh/facenet/dog_test/logs'
 
     #     train_tripletloss.py.
     #         python

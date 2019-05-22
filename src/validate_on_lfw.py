@@ -40,7 +40,7 @@ from sklearn import metrics
 from scipy.optimize import brentq
 from scipy import interpolate
 from src import facenet
-from src import lfw
+from dataset import lfw
 
 
 def main(args):

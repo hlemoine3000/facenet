@@ -38,7 +38,7 @@ import itertools
 import argparse
 import csv
 from src import facenet
-from src import lfw
+from dataset import lfw
 from src import tripletloss
 
 from tensorflow.python.ops import data_flow_ops

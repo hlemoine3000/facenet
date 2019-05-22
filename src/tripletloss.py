@@ -94,7 +94,7 @@ def select_triplets(embeddings, nrof_images_per_class, image_paths, people_per_b
     return triplets, num_trips, len(triplets)
 
 
-def triplet_loss(anchor, positive, negative, alpha):
+def triplet_loss_op(anchor, positive, negative, alpha):
     """Calculate the triplet loss according to the FaceNet paper
 
     Args:

@@ -38,7 +38,7 @@ import itertools
 import argparse
 import csv
 from src import facenet
-from src import lfw, cox
+from dataset import cox, lfw
 from src import adversarialloss
 from src import config_reader
 
@@ -46,54 +46,6 @@ from tensorflow.python.ops import data_flow_ops
 
 from six.moves import xrange  # @UnresolvedImport
 from shutil import copyfile
-
-class model_container:
-    def __init__(self,
-                 enqueue_op,
-                 embeddings,
-                 labels_batch,
-                 train_op,
-                 summary_op,
-                 summary_writer,
-                 total_loss,
-                 triplet_loss,
-                 adv_loss,
-                 image_paths_placeholder,
-                 labels_placeholder,
-                 batch_size_placeholder,
-                 learning_rate_placeholder,
-                 phase_train_placeholder,
-                 learning_rate,
-                 batch_size,
-                 embedding_size,
-                 images_per_person,
-                 people_per_batch):
-
-        # Operations
-        self.enqueue_op = enqueue_op
-        self.embeddings = embeddings
-        self.labels_batch = labels_batch
-        self.train_op = train_op
-        self.summary_op = summary_op
-        self.summary_writer = summary_writer
-
-        self.total_loss = total_loss
-        self.triplet_loss = triplet_loss
-        self.adv_loss = adv_loss
-
-        # Placeholders
-        self.image_paths_placeholder = image_paths_placeholder
-        self.labels_placeholder = labels_placeholder
-        self.batch_size_placeholder = batch_size_placeholder
-        self.learning_rate_placeholder = learning_rate_placeholder
-        self.phase_train_placeholder = phase_train_placeholder
-
-        # Parameters
-        self.batch_size = batch_size
-        self.learning_rate = learning_rate
-        self.embedding_size = embedding_size
-        self.images_per_person = images_per_person
-        self.people_per_batch = people_per_batch
 
 def main(args):
 
@@ -160,7 +112,7 @@ def main(args):
         # Read the file containing the pairs used for testing
         pairs = lfw.read_pairs(os.path.expanduser(config.lfw_pairs))
         # Get the paths for the corresponding images
-        lfw_paths, actual_issame = lfw.get_paths(os.path.expanduser(config.lfw_dir), pairs)
+        lfw_paths, lfw_actual_issame = lfw.get_paths(os.path.expanduser(config.lfw_dir), pairs)
         # Get the paths for embeddings projection
 
     # Get the paths for embeddings projection
@@ -286,25 +238,23 @@ def main(args):
         coord = tf.train.Coordinator()
         tf.train.start_queue_runners(coord=coord, sess=sess)
 
-        model = model_container(enqueue_op,
-                                embeddings,
-                                labels_batch,
-                                train_op,
-                                summary_op,
-                                summary_writer,
-                                total_loss,
-                                triplet_loss,
-                                adv_loss,
-                                image_paths_placeholder,
-                                labels_placeholder,
-                                batch_size_placeholder,
-                                learning_rate_placeholder,
-                                phase_train_placeholder,
-                                config.learning_rate,
-                                config.batch_size,
-                                config.embedding_size,
-                                config.images_per_person,
-                                config.people_per_batch)
+        model = facenet.model_container(enqueue_op=enqueue_op,
+                                        embeddings=embeddings,
+                                        labels_batch=labels_batch,
+                                        train_op=train_op,
+                                        summary_op=summary_op,
+                                        summary_writer=summary_writer,
+                                        total_loss=total_loss,
+                                        triplet_loss=triplet_loss,
+                                        adv_loss=adv_loss,
+                                        image_paths_placeholder=image_paths_placeholder,
+                                        labels_placeholder=labels_placeholder,
+                                        batch_size_placeholder=batch_size_placeholder,
+                                        learning_rate_placeholder=learning_rate_placeholder,
+                                        phase_train_placeholder=phase_train_placeholder,
+                                        learning_rate=config.learning_rate,
+                                        batch_size=config.batch_size,
+                                        embedding_size=config.embedding_size)
 
         with sess.as_default():
 
@@ -318,52 +268,51 @@ def main(args):
                 step = sess.run(global_step, feed_dict=None)
                 epoch = step // config.epoch_size
 
-                save_embeddings(sess,
+                save_embeddings(config,
+                                model,
+                                sess,
                                 projection_paths,
-                                epoch,
-                                embeddings,
-                                labels_batch,
-                                image_paths_placeholder,
-                                labels_placeholder,
-                                batch_size_placeholder,
-                                learning_rate_placeholder,
-                                phase_train_placeholder,
-                                enqueue_op,
-                                config.batch_size,
-                                emb_dir,
-                                config.embedding_size,
-                                tag='lfw')
+                                log_dir,
+                                epoch)
 
                 # Evaluate on COX
-                evaluate(sess, cox_vid1_paths, embeddings, labels_batch, image_paths_placeholder,
-                         labels_placeholder,
-                         batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder,
-                         enqueue_op,
-                         cox_vid1_issame, config.batch_size,
-                         config.lfw_nrof_folds, log_dir, step, summary_writer, config.embedding_size,
+
+                evaluate(config,
+                         model,
+                         sess,
+                         cox_vid1_paths,
+                         cox_vid1_issame,
+                         log_dir,
+                         step,
                          tag='cox_video1')
 
-                evaluate(sess, cox_vid2_paths, embeddings, labels_batch, image_paths_placeholder,
-                         labels_placeholder,
-                         batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder,
-                         enqueue_op,
-                         cox_vid2_issame, config.batch_size,
-                         config.lfw_nrof_folds, log_dir, step, summary_writer, config.embedding_size,
+                evaluate(config,
+                         model,
+                         sess,
+                         cox_vid2_paths,
+                         cox_vid2_issame,
+                         log_dir,
+                         step,
                          tag='cox_video2')
 
-                evaluate(sess, cox_vid4_paths, embeddings, labels_batch, image_paths_placeholder,
-                         labels_placeholder,
-                         batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder,
-                         enqueue_op,
-                         cox_vid4_issame, config.batch_size,
-                         config.lfw_nrof_folds, log_dir, step, summary_writer, config.embedding_size,
+                evaluate(config,
+                         model,
+                         sess,
+                         cox_vid4_paths,
+                         cox_vid4_issame,
+                         log_dir,
+                         step,
                          tag='cox_video4')
 
                 if config.lfw_dir:
-                    evaluate(sess, lfw_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
-                             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op,
-                             actual_issame, config.batch_size,
-                             config.lfw_nrof_folds, log_dir, step, summary_writer, config.embedding_size)
+                    evaluate(config,
+                             model,
+                             sess,
+                             lfw_paths,
+                             lfw_actual_issame,
+                             log_dir,
+                             step,
+                             tag='lfw')
 
                 # Train for one epoch
                 train(config,
@@ -383,7 +332,7 @@ def main(args):
     return model_dir
 
 def train(config: config_reader.quadruplets_config,
-          model: model_container,
+          model: facenet.model_container,
           sess,
           src_dataset,
           tgt_dataset,
@@ -507,7 +456,9 @@ def train(config: config_reader.quadruplets_config,
 
     return step
 
-def forward_pass(sess, model: model_container, image_paths):
+def forward_pass(sess,
+                 model: facenet.model_container,
+                 image_paths):
     nrof_examples = len(image_paths)
     labels_array = np.reshape(np.arange(nrof_examples), (-1, 4))
     image_paths_array = np.reshape(np.expand_dims(np.array(image_paths), 1), (-1, 4))
@@ -524,7 +475,10 @@ def forward_pass(sess, model: model_container, image_paths):
     return emb_array
 
 
-def sample_people(dataset, people_per_batch, images_per_person):
+def sample_people(dataset,
+                  people_per_batch,
+                  images_per_person):
+
     nrof_images = people_per_batch * images_per_person
 
     # Sample classes from the dataset
@@ -553,9 +507,15 @@ def sample_people(dataset, people_per_batch, images_per_person):
     return image_paths, num_per_class
 
 
-def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
-             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op, actual_issame,
-             batch_size, nrof_folds, log_dir, step, summary_writer, embedding_size, threshold_to_test=None, tag='lfw'):
+def evaluate(config: config_reader.quadruplets_config,
+             model: facenet.model_container,
+             sess,
+             image_paths,
+             actual_issame,
+             log_dir,
+             step,
+             tag='eval'):
+
     result = {}
     start_time = time.time()
     # Run forward pass to calculate embeddings
@@ -565,15 +525,15 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
     assert (len(image_paths) == nrof_images)
     labels_array = np.reshape(np.arange(nrof_images), (-1, 4))
     image_paths_array = np.reshape(np.expand_dims(np.array(image_paths), 1), (-1, 4))
-    sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
-    emb_array = np.zeros((nrof_images, embedding_size))
-    nrof_batches = int(np.ceil(nrof_images / batch_size))
+    sess.run(model.enqueue_op, {model.image_paths_placeholder: image_paths_array, model.labels_placeholder: labels_array})
+    emb_array = np.zeros((nrof_images, model.embedding_size))
+    nrof_batches = int(np.ceil(nrof_images / model.batch_size))
     label_check_array = np.zeros((nrof_images,))
     for i in xrange(nrof_batches):
-        batch_size = min(nrof_images - i * batch_size, batch_size)
-        emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
-                                                                   learning_rate_placeholder: 0.0,
-                                                                   phase_train_placeholder: False})
+        batch_size = min(nrof_images - i * model.batch_size, model.batch_size)
+        emb, lab = sess.run([model.embeddings, model.labels_batch], feed_dict={model.batch_size_placeholder: model.batch_size,
+                                                                               model.learning_rate_placeholder: 0.0,
+                                                                               model.phase_train_placeholder: False})
         emb_array[lab, :] = emb
         label_check_array[lab] = 1
     print('%.3f' % (time.time() - start_time))
@@ -581,7 +541,7 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
     assert (np.all(label_check_array == 1))
 
     tpr, fpr, accuracy, val, val_std, far, best_threshold, threshold_lowfar, tpr_lowfar, acc_lowfar = lfw.evaluate(
-        emb_array, actual_issame, nrof_folds=nrof_folds)
+        emb_array, actual_issame, nrof_folds=config.nrof_folds)
 
     print('Accuracy: %1.3f+-%1.3f' % (np.mean(accuracy), np.std(accuracy)))
     print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))
@@ -594,7 +554,7 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
     summary.value.add(tag=tag + '/best_threshold', simple_value=best_threshold)
     summary.value.add(tag=tag + '/val_rate_threshold', simple_value=threshold_lowfar)
     summary.value.add(tag='time/' + tag, simple_value=lfw_time)
-    summary_writer.add_summary(summary, step)
+    model.summary_writer.add_summary(summary, step)
     with open(os.path.join(log_dir, tag + '_result.txt'), 'at') as f:
         f.write('%d\t%.5f\t%.5f\n' % (step, np.mean(accuracy), val))
 
@@ -604,9 +564,13 @@ def evaluate(sess, image_paths, embeddings, labels_batch, image_paths_placeholde
 
     return result
 
-def save_embeddings(sess, image_paths, epoch, embeddings, labels_batch, image_paths_placeholder, labels_placeholder,
-             batch_size_placeholder, learning_rate_placeholder, phase_train_placeholder, enqueue_op,
-             batch_size, log_dir, embedding_size, tag='lfw'):
+def save_embeddings(config: config_reader.quadruplets_config,
+                    model: model_container,
+                    sess,
+                    image_paths,
+                    log_dir,
+                    epoch,
+                    tag='projection_set'):
 
     img_paths = image_paths
 
@@ -627,15 +591,15 @@ def save_embeddings(sess, image_paths, epoch, embeddings, labels_batch, image_pa
 
     labels_array = np.reshape(np.arange(nrof_images), (-1, 4))
     image_paths_array = np.reshape(np.expand_dims(np.array(img_paths), 1), (-1, 4))
-    sess.run(enqueue_op, {image_paths_placeholder: image_paths_array, labels_placeholder: labels_array})
-    emb_array = np.zeros((nrof_images, embedding_size))
-    nrof_batches = int(np.ceil(nrof_images / batch_size))
+    sess.run(model.enqueue_op, {model.image_paths_placeholder: image_paths_array, model.labels_placeholder: labels_array})
+    emb_array = np.zeros((nrof_images, model.embedding_size))
+    nrof_batches = int(np.ceil(nrof_images / model.batch_size))
     label_check_array = np.zeros((nrof_images,))
     for i in xrange(nrof_batches):
-        batch_size = min(nrof_images - i * batch_size, batch_size)
-        emb, lab = sess.run([embeddings, labels_batch], feed_dict={batch_size_placeholder: batch_size,
-                                                                   learning_rate_placeholder: 0.0,
-                                                                   phase_train_placeholder: False})
+        batch_size = min(nrof_images - i * model.batch_size, model.batch_size)
+        emb, lab = sess.run([model.embeddings, model.labels_batch], feed_dict={model.batch_size_placeholder: model.batch_size,
+                                                                               model.learning_rate_placeholder: 0.0,
+                                                                               model.phase_train_placeholder: False})
         emb_array[lab, :] = emb
         label_check_array[lab] = 1
 
